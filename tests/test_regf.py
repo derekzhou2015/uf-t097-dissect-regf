@@ -125,3 +125,45 @@ def test_fastleaf_non_ascii_subkey(fastleaf_hive: BinaryIO) -> None:
 
     with pytest.raises(RegistryKeyNotFoundError):
         root.subkey("Missing")
+
+
+def test_fastleaf_compressed_non_ascii_name_hint(fastleaf_hints_hive: BinaryIO) -> None:
+    # The leaf stores compressed (Latin-1) names whose NameHint carries the raw
+    # Latin-1 bytes (e.g. "Ärzte" -> b"\xc4rz"), a zero-padded hint, and an
+    # ASCII-looking garbage hint. None of these may break name based lookup.
+    hive = regf.RegistryHive(fastleaf_hints_hive)
+    root = hive.root()
+
+    assert isinstance(root._subkey_list, regf.FastLeaf)
+
+    # Enumeration behavior is unchanged and still yields every subkey.
+    assert sorted(key.name for key in root.subkeys()) == ["Arzt", "Ärzte", "Über"]
+
+    # A compressed non-ASCII name must be found by name, despite a non-ASCII,
+    # undecodable NameHint. Lookup stays case-insensitive and no string decoding
+    # exception may escape the lookup path.
+    key = root.subkey("Ärzte")
+    assert key.name == "Ärzte"
+    assert root.subkey("ärzte") is key
+    assert root.subkey("ÄRZTE") is key
+
+    # A zero-padded hint on another compressed non-ASCII name still resolves.
+    uber = root.subkey("Über")
+    assert uber.name == "Über"
+    assert root.subkey("über") is uber
+
+    # The ASCII key carries a deliberately bogus hint ("JUNK"); the real key
+    # name remains the sole source of truth, so the key is still found while the
+    # garbage hint itself never matches anything.
+    arzt = root.subkey("Arzt")
+    assert arzt.name == "Arzt"
+    assert root.subkey("arzt") is arzt
+    for bogus_name in ("JUNK", "junk", "Ärzt", "Arz"):
+        with pytest.raises(RegistryKeyNotFoundError):
+            root.subkey(bogus_name)
+
+    # Path based lookup goes through the same subkey() path.
+    assert hive.open(r"Ärzte").name == "Ärzte"
+
+    with pytest.raises(RegistryKeyNotFoundError):
+        root.subkey("Missing")

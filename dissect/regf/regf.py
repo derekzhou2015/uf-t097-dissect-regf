@@ -432,23 +432,46 @@ class FastLeaf(KeyIndex):
         return self.cell.Count
 
     def subkey(self, name: str) -> KeyNode | None:
-        name = name.lower()
-        name_hint = name[:4]
+        lname = name.lower()
+        # The NameHint is at most 4 bytes, padded with 0-bytes for names
+        # shorter than 4 characters, and is lookup acceleration only: the real
+        # key name is the sole source of truth when deciding a hit.
+        #
+        # Hints of compressed (Latin-1) non-ASCII names may contain the raw
+        # Latin-1 bytes instead of being zeroed out. Such bytes cannot be
+        # decoded as ASCII, and there is no reliable byte-level case folding for
+        # them (bytes.lower() only covers the ASCII range), so the hint is only
+        # treated as a fast path while both it and the looked-up prefix are pure
+        # ASCII. A hint mismatch never rules a key out: entries that the hint
+        # cannot vouch for are revisited afterwards and verified by their real
+        # name. This keeps a malformed or ASCII-looking garbage hint incapable of
+        # causing either a missed hit or a mismatch.
+        try:
+            name_hint = lname.encode("ascii")[:4].ljust(4, b"\x00")
+        except UnicodeEncodeError:
+            name_hint = None
 
+        skipped: list[int] | None = None
         for entry in self.cell.List:
-            # If names are < 4 characters, the name hint is padded with
-            # 0-bytes, the characters are stored from the lowest byte number
-            # up.
-            # Note that names of keys are only supposed to contain "printable
-            # characters except the `\' character", which probably is the
-            # printable subset of ascii (MS documentation is inconclusive on
-            # this).
-            # For non-ASCII names name hint is filled with zeroes, for these cases
-            # we need to fall back to regular name comparison
-            hint = entry.NameHint.rstrip(b"\x00").decode("ascii").lower()
-            if not hint or name_hint == hint:
-                sk = self.hive.cell(entry.Cell)
-                if sk.name.lower() == name:
+            hint = entry.NameHint
+            if name_hint is not None and hint.isascii() and hint.rstrip(b"\x00") and hint.lower() != name_hint:
+                # Hint does not match: defer instead of discarding, so a bad
+                # hint can never suppress a real match.
+                if skipped is None:
+                    skipped = []
+                skipped.append(entry.Cell)
+                continue
+
+            sk = self.hive.cell(entry.Cell)
+            if sk.name.lower() == lname:
+                return sk
+
+        # Fallback: verify every entry the hint could not accelerate on by its
+        # real key name. This is where non-ASCII and garbage hints land.
+        if skipped:
+            for cell_offset in skipped:
+                sk = self.hive.cell(cell_offset)
+                if sk.name.lower() == lname:
                     return sk
 
         return None

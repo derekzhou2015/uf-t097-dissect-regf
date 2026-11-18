@@ -32,3 +32,8 @@ def bad_key_value_cell_hive() -> Iterator[BinaryIO]:
 @pytest.fixture
 def fastleaf_hive() -> Iterator[BinaryIO]:
     yield from open_file_gz("_data/FastLeaf.gz")
+
+
+@pytest.fixture
+def fastleaf_hints_hive() -> Iterator[BinaryIO]:
+    yield from open_file_gz("_data/FastLeafHints.gz")
